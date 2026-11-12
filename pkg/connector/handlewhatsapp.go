@@ -357,7 +357,11 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 		}
 		return
 	}
-	if parsedMessageType == "ignore" {
+	if bundle := evt.Message.GetMessageHistoryBundle(); bundle != nil && evt.SourceWebMsg == nil {
+		// SourceWebMsg is only set for messages unpacked from a bundle (or a
+		// history sync), which mustn't unpack another.
+		return wa.handleWAMessageHistoryBundle(ctx, evt, bundle)
+	} else if parsedMessageType == "ignore" {
 		return
 	} else if strings.HasPrefix(parsedMessageType, "unknown_protocol_") {
 		wa.UserLogin.Log.Debug().
