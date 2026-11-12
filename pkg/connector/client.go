@@ -58,6 +58,8 @@ func (wa *WhatsAppConnector) LoadUserLogin(ctx context.Context, login *bridgev2.
 		previousOwnLIDs:           exsync.NewSetWithItems(login.Metadata.(*waid.UserLoginMetadata).PreviousOwnLIDs),
 
 		onDemandHistorySyncRequests: make(map[types.JID]onDemandHistorySyncRequest),
+		sharedHistoryRequests:       make(map[types.MessageID]types.JID),
+		sharedHistoryRequested:      make(map[types.JID]time.Time),
 
 		disableNewsletter: store.BaseClientPayload.GetUserAgent().GetPlatform() == waWa6.ClientPayload_UserAgent_MACOS,
 	}
@@ -139,6 +141,10 @@ type WhatsAppClient struct {
 
 	onDemandHistorySyncLock     sync.Mutex
 	onDemandHistorySyncRequests map[types.JID]onDemandHistorySyncRequest
+	// Shared history requests by request message ID, and when each chat was last
+	// asked (sharedhistory.go). Guarded by onDemandHistorySyncLock.
+	sharedHistoryRequests  map[types.MessageID]types.JID
+	sharedHistoryRequested map[types.JID]time.Time
 
 	previousOwnLIDs     *exsync.Set[types.JID]
 	previousOwnLIDsLock sync.Mutex
