@@ -25,14 +25,18 @@ import (
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
@@ -64,7 +68,8 @@ var cmdFetchSharedHistory = &commands.FullHandler{
 	Name: "fetch-shared-history",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "Ask your phone for the messages from before the oldest one in this chat, such as the history shared when you were added to a group, and bridge them.",
+		Description: "Ask your phone for the messages from before the oldest one in this chat (or before the given message), such as the history shared when you were added to a group, and bridge them.",
+		Args:        "[_message ID_]",
 	},
 	RequiresLogin:  true,
 	RequiresPortal: true,
@@ -84,7 +89,13 @@ func fnFetchSharedHistory(ce *commands.Event) {
 		ce.Reply("Failed to parse chat ID: %v", err)
 		return
 	}
-	if err = login.Client.(*WhatsAppClient).requestSharedHistory(ce.Ctx, portalJID); err != nil {
+	// An argument names the message to fetch history before, by its full ID,
+	// instead of the chat's oldest one.
+	var before networkid.MessageID
+	if len(ce.Args) > 0 {
+		before = networkid.MessageID(ce.Args[0])
+	}
+	if err = login.Client.(*WhatsAppClient).requestSharedHistory(ce.Ctx, portalJID, before); err != nil {
 		ce.Reply("Failed to ask your phone for the history: %v", err)
 		return
 	}
@@ -110,12 +121,14 @@ func (wa *WhatsAppClient) requestSharedHistoryLater(ctx context.Context, portalJ
 	case <-ctx.Done():
 		return
 	}
-	if err := wa.requestSharedHistory(ctx, portalJID); err != nil {
+	if err := wa.requestSharedHistory(ctx, portalJID, ""); err != nil {
 		zerolog.Ctx(ctx).Err(err).Stringer("portal_jid", portalJID).Msg("Failed to request shared history from phone")
 	}
 }
 
-func (wa *WhatsAppClient) requestSharedHistory(ctx context.Context, portalJID types.JID) error {
+// requestSharedHistory asks the phone for the messages before one in the chat:
+// the given one, or the oldest one bridged.
+func (wa *WhatsAppClient) requestSharedHistory(ctx context.Context, portalJID types.JID, before networkid.MessageID) error {
 	if wa.Client == nil || !wa.Client.IsLoggedIn() {
 		return errors.New("not logged in")
 	}
@@ -125,7 +138,12 @@ func (wa *WhatsAppClient) requestSharedHistory(ctx context.Context, portalJID ty
 	} else if portal == nil {
 		return errors.New("chat isn't bridged")
 	}
-	anchor, err := wa.Main.Bridge.DB.Message.GetFirstPortalMessageExcludingIDPattern(ctx, portal.PortalKey, "fake:%")
+	var anchor *database.Message
+	if before != "" {
+		anchor, err = wa.Main.Bridge.DB.Message.GetFirstPartByID(ctx, portal.Receiver, before)
+	} else {
+		anchor, err = wa.Main.Bridge.DB.Message.GetFirstPortalMessageExcludingIDPattern(ctx, portal.PortalKey, "fake:%")
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get oldest message: %w", err)
 	} else if anchor == nil {
@@ -210,7 +228,7 @@ func (wa *WhatsAppClient) handleSharedHistorySync(ctx context.Context, sessionID
 		return true
 	}
 	wasRead := wa.readToEnd(ctx, portal.MXID)
-	bridged := 0
+	bridged, added := 0, 0
 	var lastID networkid.MessageID
 	for _, webMsg := range messages {
 		evt, err := wa.Client.ParseWebMessage(portalJID, webMsg)
@@ -222,17 +240,87 @@ func (wa *WhatsAppClient) handleSharedHistorySync(ctx context.Context, sessionID
 		case "message history notice", "ignore":
 			continue
 		}
-		if wa.handleWAMessage(ctx, evt) {
-			bridged++
-			// handleWAMessage fills in the sender's other JID, which the ID uses.
-			lastID = waid.MakeMessageIDWithAltSender(evt.Info.Chat, evt.Info.Sender, evt.Info.SenderAlt, evt.Info.ID)
+		// The message's ID uses the sender's other JID, which this fills in.
+		if !wa.ensureAltJIDs(ctx, &evt.Info.MessageSource, true) {
+			continue
+		}
+		msgID := waid.MakeMessageIDWithAltSender(evt.Info.Chat, evt.Info.Sender, evt.Info.SenderAlt, evt.Info.ID)
+		existing, err := wa.Main.Bridge.DB.Message.GetFirstPartByID(ctx, portal.Receiver, msgID)
+		if err != nil {
+			log.Err(err).Str("msg_id", evt.Info.ID).Msg("Failed to check whether shared message is already bridged")
+		}
+		target := pickLID(evt.Info.Sender, evt.Info.SenderAlt).ToNonAD()
+		if !wa.handleWAMessage(ctx, evt) {
+			continue
+		}
+		bridged++
+		if existing == nil {
+			added++
+			lastID = msgID
+		}
+		for _, reaction := range webMsg.GetReactions() {
+			if reactionEvt := sharedHistoryReaction(portalJID, wa.GetLID(), true, target, evt.Info.ID, reaction); reactionEvt != nil {
+				wa.handleWAMessage(ctx, reactionEvt)
+			}
 		}
 	}
-	log.Info().Int("bridged_count", bridged).Bool("chat_was_read", wasRead).Msg("Finished bridging shared history")
+	log.Info().
+		Int("bridged_count", bridged).
+		Int("added_count", added).
+		Bool("chat_was_read", wasRead).
+		Msg("Finished bridging shared history")
+	// Only history that's new to the chat sits after the read marker.
 	if wasRead && lastID != "" {
 		wa.markReadOnceBridged(ctx, portal, lastID)
 	}
 	return true
+}
+
+// sharedHistoryReaction turns a reaction listed on a history message into the
+// event the reaction would have arrived as. A history message's reactions come
+// with it rather than as messages of their own.
+// own is whose history it is: reactions it marks as from me are theirs.
+func sharedHistoryReaction(chat, own types.JID, ownIsMe bool, target types.JID, targetID types.MessageID, reaction *waWeb.Reaction) *events.Message {
+	if reaction.GetText() == "" || reaction.GetKey().GetID() == "" {
+		return nil
+	}
+	var sender types.JID
+	isMe := false
+	if reaction.GetKey().GetFromMe() {
+		sender, isMe = own.ToNonAD(), ownIsMe
+	} else {
+		sender, _ = types.ParseJID(reaction.GetKey().GetParticipant())
+	}
+	if sender.IsEmpty() {
+		return nil
+	}
+	return sharedReactionEvent(chat, sender, isMe, target, targetID, reaction)
+}
+
+func sharedReactionEvent(chat, sender types.JID, isMe bool, target types.JID, targetID types.MessageID, reaction *waWeb.Reaction) *events.Message {
+	return &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:     chat,
+				Sender:   sender,
+				IsFromMe: isMe,
+				IsGroup:  chat.Server == types.GroupServer,
+			},
+			ID:        reaction.GetKey().GetID(),
+			Timestamp: time.UnixMilli(reaction.GetSenderTimestampMS()),
+		},
+		Message: &waE2E.Message{ReactionMessage: &waE2E.ReactionMessage{
+			// The key is as the reactor's phone would write it: by the target's sender.
+			Key: &waCommon.MessageKey{
+				RemoteJID:   proto.String(chat.String()),
+				FromMe:      proto.Bool(false),
+				ID:          proto.String(targetID),
+				Participant: proto.String(target.String()),
+			},
+			Text:              proto.String(reaction.GetText()),
+			SenderTimestampMS: proto.Int64(reaction.GetSenderTimestampMS()),
+		}},
+	}
 }
 
 // doublePuppet is the user's own Matrix account, as the bridge acts for it.

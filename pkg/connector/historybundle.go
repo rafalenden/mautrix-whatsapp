@@ -109,8 +109,17 @@ func (wa *WhatsAppClient) handleWAMessageHistoryBundle(ctx context.Context, evt 
 		case "message history notice", "ignore":
 			continue
 		}
-		if wa.handleWAMessage(ctx, msgEvt) {
-			bridged++
+		if !wa.handleWAMessage(ctx, msgEvt) {
+			continue
+		}
+		bridged++
+		// The bundle is the sharer's, so reactions it marks as from me are theirs.
+		target := pickLID(msgEvt.Info.Sender, msgEvt.Info.SenderAlt).ToNonAD()
+		sharer := pickLID(evt.Info.Sender, evt.Info.SenderAlt)
+		for _, reaction := range webMsg.GetReactions() {
+			if reactionEvt := sharedHistoryReaction(evt.Info.Chat, sharer, false, target, msgEvt.Info.ID, reaction); reactionEvt != nil {
+				wa.handleWAMessage(ctx, reactionEvt)
+			}
 		}
 	}
 	log.Info().Int("bridged_count", bridged).Msg("Finished bridging message history bundle")

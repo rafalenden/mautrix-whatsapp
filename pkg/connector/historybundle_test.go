@@ -165,3 +165,43 @@ func TestIsSharedWithMe(t *testing.T) {
 		t.Error("claimed a share with others")
 	}
 }
+
+func TestSharedHistoryReaction(t *testing.T) {
+	group := types.NewJID("120363000000000000", types.GroupServer)
+	own := types.JID{User: "31100000000000", Device: 24, Server: types.HiddenUserServer}
+	target := types.NewJID("222", types.HiddenUserServer)
+	reaction := func(fromMe bool, participant, text string) *waWeb.Reaction {
+		key := &waCommon.MessageKey{FromMe: proto.Bool(fromMe), ID: proto.String("R")}
+		if participant != "" {
+			key.Participant = proto.String(participant)
+		}
+		return &waWeb.Reaction{Key: key, Text: proto.String(text), SenderTimestampMS: proto.Int64(1700000000000)}
+	}
+
+	evt := sharedHistoryReaction(group, own, true, target, "A", reaction(false, "333@lid", "👍"))
+	if evt == nil || evt.Info.Sender.String() != "333@lid" || evt.Info.IsFromMe || evt.Info.ID != "R" {
+		t.Fatalf("member's reaction became %+v", evt)
+	}
+	key := evt.Message.GetReactionMessage().GetKey()
+	if key.GetID() != "A" || key.GetParticipant() != "222@lid" || key.GetFromMe() || key.GetRemoteJID() != group.String() {
+		t.Errorf("reaction targets %+v", key)
+	}
+	if getMessageType(evt.Message) != "reaction" {
+		t.Errorf("parsed as %s", getMessageType(evt.Message))
+	}
+
+	evt = sharedHistoryReaction(group, own, true, target, "A", reaction(true, "", "❤️"))
+	if evt == nil || evt.Info.Sender.String() != "31100000000000@lid" || !evt.Info.IsFromMe {
+		t.Errorf("own reaction became %+v", evt)
+	}
+	evt = sharedHistoryReaction(group, target, false, target, "A", reaction(true, "", "❤️"))
+	if evt == nil || evt.Info.Sender != target || evt.Info.IsFromMe {
+		t.Errorf("sharer's reaction became %+v", evt)
+	}
+	if sharedHistoryReaction(group, own, true, target, "A", reaction(false, "333@lid", "")) != nil {
+		t.Error("kept a removed reaction")
+	}
+	if sharedHistoryReaction(group, own, true, target, "A", reaction(false, "", "👍")) != nil {
+		t.Error("kept a reaction from nobody")
+	}
+}
