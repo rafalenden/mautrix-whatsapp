@@ -146,3 +146,22 @@ func TestParseMessageHistoryBundleMessage(t *testing.T) {
 		t.Error("accepted a message from another chat")
 	}
 }
+
+func TestIsSharedWithMe(t *testing.T) {
+	wa := &WhatsAppClient{
+		JID: types.NewADJID("48000000000", 0, 24),
+		LID: types.NewADJID("31100000000000", 0, 24),
+	}
+	notice := func(receivers ...string) *waE2E.MessageHistoryNotice {
+		return &waE2E.MessageHistoryNotice{MessageHistoryMetadata: &waE2E.MessageHistoryMetadata{HistoryReceivers: receivers}}
+	}
+	if !wa.isSharedWithMe(notice("222@lid", "31100000000000@lid")) {
+		t.Error("missed our LID")
+	}
+	if !wa.isSharedWithMe(notice("48000000000@s.whatsapp.net")) {
+		t.Error("missed our phone number")
+	}
+	if wa.isSharedWithMe(notice("222@lid", "333@s.whatsapp.net")) || wa.isSharedWithMe(notice()) {
+		t.Error("claimed a share with others")
+	}
+}

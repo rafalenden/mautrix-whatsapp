@@ -361,7 +361,12 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 		// SourceWebMsg is only set for messages unpacked from a bundle (or a
 		// history sync), which mustn't unpack another.
 		return wa.handleWAMessageHistoryBundle(ctx, evt, bundle)
-	} else if parsedMessageType == "ignore" {
+	} else if notice := evt.Message.GetMessageHistoryNotice(); notice != nil && evt.SourceWebMsg == nil && wa.isSharedWithMe(notice) {
+		// The bundle may not be readable, so the phone is asked too. The notice
+		// itself is still bridged below.
+		go wa.requestSharedHistoryLater(context.WithoutCancel(ctx), evt.Info.Chat)
+	}
+	if parsedMessageType == "ignore" {
 		return
 	} else if strings.HasPrefix(parsedMessageType, "unknown_protocol_") {
 		wa.UserLogin.Log.Debug().

@@ -156,7 +156,9 @@ func (wa *WhatsAppClient) downloadAndSaveWAHistorySyncData(ctx context.Context, 
 	}
 	if blob.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND {
 		wa.finishOnDemandHistorySyncRequest(evt.GetPeerDataRequestSessionID())
-		wa.handleOnDemandHistorySync(ctx, blob)
+		if !wa.handleSharedHistorySync(ctx, evt.GetPeerDataRequestSessionID(), blob) {
+			wa.handleOnDemandHistorySync(ctx, blob)
+		}
 		if err = wa.Main.DB.HSNotif.Delete(ctx, rowid); err != nil {
 			log.Err(err).Msg("Failed to delete queued on-demand history sync notification")
 		} else if err = wa.Client.DeleteMedia(ctx, whatsmeow.MediaHistory, evt.GetDirectPath(), evt.GetFileEncSHA256(), evt.GetEncHandle()); err != nil {
