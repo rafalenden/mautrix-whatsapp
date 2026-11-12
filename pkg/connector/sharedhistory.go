@@ -29,7 +29,14 @@ import (
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
+	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/appservice"
+	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
+	"maunium.net/go/mautrix/bridgev2/matrix"
+	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
@@ -197,7 +204,14 @@ func (wa *WhatsAppClient) handleSharedHistorySync(ctx context.Context, sessionID
 		Int("conversation_count", len(blob.GetConversations())).
 		Int("message_count", len(messages)).
 		Msg("Phone answered shared history request")
+	portal, err := wa.Main.Bridge.GetExistingPortalByKey(ctx, wa.makeWAPortalKey(portalJID))
+	if err != nil || portal == nil || portal.MXID == "" {
+		log.Warn().Err(err).Msg("Chat for shared history isn't bridged")
+		return true
+	}
+	wasRead := wa.readToEnd(ctx, portal.MXID)
 	bridged := 0
+	var lastID networkid.MessageID
 	for _, webMsg := range messages {
 		evt, err := wa.Client.ParseWebMessage(portalJID, webMsg)
 		if err != nil {
@@ -210,8 +224,73 @@ func (wa *WhatsAppClient) handleSharedHistorySync(ctx context.Context, sessionID
 		}
 		if wa.handleWAMessage(ctx, evt) {
 			bridged++
+			// handleWAMessage fills in the sender's other JID, which the ID uses.
+			lastID = waid.MakeMessageIDWithAltSender(evt.Info.Chat, evt.Info.Sender, evt.Info.SenderAlt, evt.Info.ID)
 		}
 	}
-	log.Info().Int("bridged_count", bridged).Msg("Finished bridging shared history")
+	log.Info().Int("bridged_count", bridged).Bool("chat_was_read", wasRead).Msg("Finished bridging shared history")
+	if wasRead && lastID != "" {
+		wa.markReadOnceBridged(ctx, portal, lastID)
+	}
 	return true
+}
+
+// doublePuppet is the user's own Matrix account, as the bridge acts for it.
+func (wa *WhatsAppClient) doublePuppet(ctx context.Context) *appservice.IntentAPI {
+	if intent, ok := wa.UserLogin.User.DoublePuppet(ctx).(*matrix.ASIntent); ok {
+		return intent.Matrix()
+	}
+	return nil
+}
+
+// readToEnd says whether the user has read a chat up to its last message.
+// History added to the chat arrives after the read marker, so it would show up
+// as unread, which it shouldn't if everything before it had been read.
+// Reactions and the like after the marker don't count, as they don't notify.
+func (wa *WhatsAppClient) readToEnd(ctx context.Context, roomID id.RoomID) bool {
+	intent := wa.doublePuppet(ctx)
+	if intent == nil {
+		return false
+	}
+	var marker event.FullyReadEventContent
+	if err := intent.GetRoomAccountData(ctx, roomID, event.AccountDataFullyRead.Type, &marker); err != nil || marker.EventID == "" {
+		return false
+	}
+	resp, err := intent.Messages(ctx, roomID, "", "", mautrix.DirectionBackward, nil, 50)
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to read chat's latest events")
+		return false
+	}
+	for _, evt := range resp.Chunk {
+		if evt.ID == marker.EventID {
+			return true
+		} else if (evt.Type == event.EventMessage || evt.Type == event.EventEncrypted) && evt.Sender != intent.UserID {
+			return false
+		}
+	}
+	return false
+}
+
+// markReadOnceBridged moves the read marker to a message once it's in the chat.
+// Messages are bridged in the portal's own time, so this waits for it.
+func (wa *WhatsAppClient) markReadOnceBridged(ctx context.Context, portal *bridgev2.Portal, msgID networkid.MessageID) {
+	intent := wa.UserLogin.User.DoublePuppet(ctx)
+	if intent == nil {
+		return
+	}
+	for range 60 {
+		msg, err := wa.Main.Bridge.DB.Message.GetLastPartByID(ctx, portal.Receiver, msgID)
+		if err == nil && msg != nil && msg.MXID != "" {
+			if err = intent.MarkRead(ctx, portal.MXID, msg.MXID, time.Now()); err != nil {
+				zerolog.Ctx(ctx).Err(err).Msg("Failed to mark shared history read")
+			}
+			return
+		}
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-ctx.Done():
+			return
+		}
+	}
+	zerolog.Ctx(ctx).Warn().Str("msg_id", string(msgID)).Msg("Shared history didn't reach the chat in time to mark it read")
 }
