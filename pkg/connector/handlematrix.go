@@ -141,6 +141,11 @@ func (wa *WhatsAppClient) handleConvertedMatrixMessage(ctx context.Context, msg 
 		if errors.Is(err, whatsmeow.ErrNoPermissionInGroup) {
 			return nil, ErrNotCommunityAdmin
 		}
+		msg.RemovePending(networkid.TransactionID(wrappedMsgID))
+		msg.RemovePending(networkid.TransactionID(wrappedMsgID2))
+		if other := wa.otherLoginInGroup(ctx, msg.Portal, err); other != nil {
+			return other.handleConvertedMatrixMessage(ctx, msg, waMsg, req)
+		}
 		return nil, wa.wrapSendError(err)
 	}
 	var pickedMessageID networkid.MessageID
@@ -216,6 +221,9 @@ func (wa *WhatsAppClient) HandleMatrixReaction(ctx context.Context, msg *bridgev
 
 	resp, err := wa.Client.SendMessage(ctx, portalJID, reactionMsg, req)
 	zerolog.Ctx(ctx).Trace().Any("response", resp).Msg("WhatsApp reaction response")
+	if other := wa.otherLoginInGroup(ctx, msg.Portal, err); other != nil {
+		return other.HandleMatrixReaction(ctx, msg)
+	}
 	return &database.Reaction{
 		Metadata: &waid.ReactionMetadata{
 			SenderDeviceID: wa.JID.Device,
@@ -250,6 +258,9 @@ func (wa *WhatsAppClient) HandleMatrixReactionRemove(ctx context.Context, msg *b
 	defer wa.mcTrack(msg, time.Now(), &retErr)
 	resp, err := wa.Client.SendMessage(ctx, portalJID, reactionMsg, extra)
 	zerolog.Ctx(ctx).Trace().Any("response", resp).Msg("WhatsApp reaction response")
+	if other := wa.otherLoginInGroup(ctx, msg.Portal, err); other != nil {
+		return other.HandleMatrixReactionRemove(ctx, msg)
+	}
 	return wa.wrapSendError(err)
 }
 
@@ -290,6 +301,9 @@ func (wa *WhatsAppClient) HandleMatrixEdit(ctx context.Context, edit *bridgev2.M
 		ID: editID,
 	})
 	log.Trace().Any("response", resp).Msg("WhatsApp edit response")
+	if other := wa.otherLoginInGroup(ctx, edit.Portal, err); other != nil {
+		return other.HandleMatrixEdit(ctx, edit)
+	}
 	return wa.wrapSendError(err)
 }
 
@@ -315,6 +329,9 @@ func (wa *WhatsAppClient) HandleMatrixMessageRemove(ctx context.Context, msg *br
 
 	resp, err := wa.Client.SendMessage(ctx, portalJID, revokeMessage, extra)
 	log.Trace().Any("response", resp).Msg("WhatsApp delete response")
+	if other := wa.otherLoginInGroup(ctx, msg.Portal, err); other != nil {
+		return other.HandleMatrixMessageRemove(ctx, msg)
+	}
 	return wa.wrapSendError(err)
 }
 
