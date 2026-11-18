@@ -1,0 +1,77 @@
+# Publishes a macOS build of every commit pushed to custom as a GitHub release,
+# named after the day and the commit (v2026.11.18-8a98afc), with the binary as
+# mautrix-whatsapp-darwin-arm64, as mautrix's own releases name theirs. GitHub
+# records each asset's SHA-256, which Servuso pins.
+name: Release
+
+on:
+  push:
+    branches: [custom]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  BINARY_NAME: mautrix-whatsapp
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Name the release
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(git show -s --format=%cd --date=format:%Y.%m.%d HEAD)-${GITHUB_SHA::7}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$tag is already released."
+          fi
+
+      - name: Test
+        if: steps.tag.outputs.exists != 'true'
+        run: go test -tags goolm ./...
+
+      # goolm replaces libolm, so the binary needs nothing beside it. The
+      # release's name isn't passed in as main.Tag: mautrix reads a tag as its
+      # own version, and WhatsApp's calendar versions panic at any other.
+      - name: Build
+        if: steps.tag.outputs.exists != 'true'
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          mkdir -p dist
+          go build -tags goolm -trimpath \
+            -ldflags "-s -w -X main.Commit=$GITHUB_SHA -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "dist/$BINARY_NAME-darwin-arm64" "./cmd/$BINARY_NAME"
+          "dist/$BINARY_NAME-darwin-arm64" --version
+          (cd dist && shasum -a 256 "$BINARY_NAME-darwin-arm64" > "$BINARY_NAME-darwin-arm64.sha256")
+
+      - name: Publish
+        if: steps.tag.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes "macOS (Apple silicon) build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}." \
+            --latest
