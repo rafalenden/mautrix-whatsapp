@@ -2,6 +2,9 @@
 # named after the day and the commit (v2026.11.18-8a98afc), with the binary as
 # mautrix-whatsapp-darwin-arm64, as mautrix's own releases name theirs. GitHub
 # records each asset's SHA-256, which Servuso pins.
+#
+# It runs on an Intel Mac, which builds for Apple silicon as well, cgo
+# included: GitHub's Apple silicon runners were too busy to take the job.
 name: Release
 
 on:
@@ -21,14 +24,15 @@ env:
 
 jobs:
   release:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v7
 
+      # The newest Go, rather than the oldest go.mod allows.
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
           cache: true
 
       - name: Name the release
@@ -50,6 +54,7 @@ jobs:
       # goolm replaces libolm, so the binary needs nothing beside it. The
       # release's name isn't passed in as main.Tag: mautrix reads a tag as its
       # own version, and WhatsApp's calendar versions panic at any other.
+      # An Intel Mac can't run what it builds, so only its architecture is checked.
       - name: Build
         if: steps.tag.outputs.exists != 'true'
         env:
@@ -61,7 +66,8 @@ jobs:
           go build -tags goolm -trimpath \
             -ldflags "-s -w -X main.Commit=$GITHUB_SHA -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o "dist/$BINARY_NAME-darwin-arm64" "./cmd/$BINARY_NAME"
-          "dist/$BINARY_NAME-darwin-arm64" --version
+          archs=$(lipo -archs "dist/$BINARY_NAME-darwin-arm64")
+          [ "$archs" = arm64 ] || { echo "Built for $archs, not arm64."; exit 1; }
           (cd dist && shasum -a 256 "$BINARY_NAME-darwin-arm64" > "$BINARY_NAME-darwin-arm64.sha256")
 
       - name: Publish
