@@ -566,6 +566,11 @@ func (wa *WhatsAppClient) handleWAReceipt(ctx context.Context, evt *events.Recei
 	} else if evt.Chat.Server == types.NewsletterServer && evt.Type == types.ReceiptTypeReadSelf {
 		senderLID = wa.GetLID()
 	}
+	if evtType == bridgev2.RemoteEventDeliveryReceipt && evt.Chat.Server == types.GroupServer {
+		// bridgev2 only passes delivery receipts on in one-to-one chats.
+		wa.handleGroupDelivery(ctx, evt.Chat, senderLID, evt.Timestamp, targets)
+		return true
+	}
 	res := wa.UserLogin.QueueRemoteEvent(&simplevent.Receipt{
 		EventMeta: simplevent.EventMeta{
 			Type:      evtType,

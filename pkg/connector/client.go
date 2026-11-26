@@ -148,6 +148,9 @@ type WhatsAppClient struct {
 	sharedHistoryRequests  map[types.MessageID]types.JID
 	sharedHistoryRequested map[types.JID]time.Time
 
+	// Deliveries in groups waiting to be reported (groupdelivery.go).
+	groupDeliveries groupDeliveries
+
 	previousOwnLIDs     *exsync.Set[types.JID]
 	previousOwnLIDsLock sync.Mutex
 }
