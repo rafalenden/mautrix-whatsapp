@@ -75,6 +75,10 @@ max_member_sync: -1
 # Lazily load avatars using direct media?
 # Global direct media must be enabled for this.
 lazy_avatars: false
+# A folder to keep what WhatsApp sends once and the bridge doesn't bridge: receipts with
+# their own times, events it has no handler for, history it couldn't parse. One JSON
+# object a line, in a file a month, never removed. Nothing is kept while this is empty.
+journal_dir:
 
 # Settings for converting animated stickers.
 animated_sticker:

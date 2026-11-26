@@ -311,11 +311,13 @@ func (wa *WhatsAppClient) handleWAHistorySync(
 					Ints32("unknown_key_fields", unknownProtoFields(rawMsg.GetMessage().GetKey())).
 					Ints32("unknown_message_fields", unknownProtoFields(rawMsg.GetMessage().GetMessage())).
 					Msg("Dropping historical message due to parse error")
+				wa.journalHistoryMessage(jid, rawMsg.GetMessage(), true)
 				log.Trace().
 					Any("web_message_info", rawMsg.GetMessage()).
 					Msg("Content of event that failed to parse")
 				continue
 			}
+			wa.journalHistoryMessage(jid, rawMsg.GetMessage(), false)
 			if firstItemTime.IsZero() {
 				firstItemTime = msgEvt.Info.Timestamp
 			}
