@@ -79,6 +79,7 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 	log := wa.UserLogin.Log
 	ctx := log.WithContext(wa.Main.Bridge.BackgroundCtx)
 	wa.MC.OnWhatsAppEvent(rawEvt)
+	wa.journalEvent(rawEvt)
 
 	success = true
 	switch evt := rawEvt.(type) {

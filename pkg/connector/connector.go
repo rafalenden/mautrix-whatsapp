@@ -63,6 +63,8 @@ type WhatsAppConnector struct {
 	stopMediaEditCacheLoop atomic.Pointer[context.CancelFunc]
 
 	unmigratedDMs *exsync.Set[networkid.PortalKey]
+
+	journal journal
 }
 
 func init() {

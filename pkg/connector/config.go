@@ -54,6 +54,7 @@ type Config struct {
 	UseWhatsAppRetryStore       bool          `yaml:"use_whatsapp_retry_store"`
 	MaxMemberSync               int           `yaml:"max_member_sync"`
 	LazyAvatars                 bool          `yaml:"lazy_avatars"`
+	JournalDir                  string        `yaml:"journal_dir"`
 
 	AnimatedSticker msgconv.AnimatedStickerConfig `yaml:"animated_sticker"`
 
@@ -133,6 +134,7 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Bool, "use_whatsapp_retry_store")
 	helper.Copy(up.Int, "max_member_sync")
 	helper.Copy(up.Bool, "lazy_avatars")
+	helper.Copy(up.Str|up.Null, "journal_dir")
 
 	helper.Copy(up.Str, "animated_sticker", "target")
 	helper.Copy(up.Int, "animated_sticker", "args", "width")
